@@ -16,8 +16,8 @@
 
 const int tlWidth = 40;
 const int tlHeight = 33;
-const char *username = "@twitter";
-const char *years = "5 years";
+const char *username = "@jlupien";
+const char *years = "8 years";
 
 
 Adafruit_SSD1351 tft =
@@ -48,8 +48,7 @@ Vec2d<int> posHidUsername = Vec2d<int>();
 Vec2d<int> posUsername = Vec2d<int>();
 // text animation
 float textAnimSpeed = 0.2f;
-uint16_t textDisplayDuration = 10000;
-uint16_t textCoolOffDuration = 1500;
+uint16_t idleDurationBeforeHidingText = 10000;
 
 // logo color animation
 unsigned long lastLogoColorUpdate;
@@ -62,24 +61,23 @@ uint16_t totalLogoColorSteps = defaultLogoColorSteps;
 
 // Accelerometer
 LIS2DW12Sensor* acc;
-uint32_t accState;
-bool wakeupText = true;
-bool wakeupAll = true;
-unsigned long lastWakeUpdate;
-unsigned long lastTextEnabled;
-unsigned long lastTextUpdate;
-unsigned int wakeMaxDuration = 90000;
+uint32_t previousAccelerometerState;
+bool hideText = false;
+bool isSleeping = false;
+unsigned long lastMovementDetectedTime;
+unsigned long lastTextStateChangeTime;
+unsigned int idleDurationBeforeSleep = 60000;
 
 // NOTE: `loop`, `setup` and `flush` are sort of common operations
 // Modify `initialize` and `tick` to customize this demo
 
 void pickNextLogoColor() {
-  if (wakeupAll && (nextLogoColor <= 0 || sourceLogoColor <= 0)) {
+  if (!isSleeping && (nextLogoColor <= 0 || sourceLogoColor <= 0)) {
     nextLogoColor = std::max(sourceLogoColor, nextLogoColor);
     sourceLogoColor = 0x0000;
   }
   
-  if (wakeupAll || nextLogoColor <= 0) {
+  if (!isSleeping || nextLogoColor <= 0) {
     while(sourceLogoColor == nextLogoColor || nextLogoColor <= 0) {
       nextLogoColor = randomLogoColor();
     }
@@ -90,10 +88,10 @@ void pickNextLogoColor() {
 
 uint16_t getLogoColor() {
   // When asleep, only keep color logo on screen for 2s, otherwise 10s
-  unsigned int onScreenTime = sourceLogoColor > 0 && !wakeupAll ? 2000 : 10000;
+  unsigned int onScreenTime = sourceLogoColor > 0 && isSleeping ? 2000 : 10000;
   
   // If we've just woken up, set logo color to animate in quickly
-  if (wakeupAll && (nextLogoColor == 0 || sourceLogoColor == 0)) {
+  if (!isSleeping && (nextLogoColor == 0 || sourceLogoColor == 0)) {
     uint16_t currStep = nextLogoColor == 0 ? (totalLogoColorSteps - logoColorStep) : logoColorStep;
     logoColorStep = (currStep * fastLogoColorSteps / totalLogoColorSteps) + 1; // Add 1 to make sure we animate
     totalLogoColorSteps = fastLogoColorSteps;
@@ -137,7 +135,7 @@ void drawLogo()
 
 void animateText(Vec2d<int> &posVec, Vec2d<int> &posVisVec, Vec2d<int> &posHidVec)
 {
-  int targetPos = wakeupText ? posVisVec.y : posHidVec.y;
+  int targetPos = hideText ? posHidVec.y : posVisVec.y;
 
   if (posVec.y != targetPos) {
     // lerp
@@ -194,7 +192,7 @@ void drawParticles()
 {
   if (!currRocket) {
     // random chance to add new firework if there's no rocket and particles count is below threshold
-    if (wakeupAll && Particles.size() < 80 && randomf() <= 0.1) {
+    if (!isSleeping && Particles.size() < 80 && randomf() <= 0.1) {
       currRocket = Particle(randomf() * screen.x, screen.y, true, randomFireworkColor());
     }
   } else if (currRocket.value().explode(Particles)) {
@@ -226,33 +224,29 @@ void drawParticles()
 void updateWakeState()
 {
   unsigned long now = millis();
-  unsigned long timeSinceUpdate = now - lastWakeUpdate;
+  unsigned long timeSinceLastMovementDetected = now - lastMovementDetectedTime;
 
-  if (timeSinceUpdate > wakeMaxDuration) {
-    wakeupAll = false;
+  if (timeSinceLastMovementDetected > idleDurationBeforeSleep) {
+    isSleeping = true;
   }
-  if (wakeupText && now - lastTextEnabled > textDisplayDuration) {
-    lastTextUpdate = now;
-    wakeupText = false;
+
+  if (timeSinceLastMovementDetected > idleDurationBeforeHidingText) {
+    hideText = true;
   }
 
   // Read accelerometer
   int16_t axes[3];
   acc->Get_X_AxesRaw(axes);
   // Scale values down to be less sensitive
-  uint32_t newAccState = (axes[0] / 256 << 16) | (axes[1] / 256 << 8) | axes[2] / 256;
+  uint32_t newAccelerometerState = (axes[0] / 256 << 16) | (axes[1] / 256 << 8) | axes[2] / 256;
 
   // Update wake state
-  bool changed = newAccState != accState;
-  if (changed) {
-    if (now - lastTextUpdate > textCoolOffDuration) {
-      lastTextEnabled = now;
-      wakeupText = true;
-    }
-    lastTextUpdate = now;
-    wakeupAll = true;
-    lastWakeUpdate = now;
-    accState = newAccState;
+  bool movementDetected = newAccelerometerState != previousAccelerometerState;
+  if (movementDetected) {
+    hideText = false;
+    isSleeping = false;
+    lastMovementDetectedTime = now;
+    previousAccelerometerState = newAccelerometerState;
   }
 }
 
